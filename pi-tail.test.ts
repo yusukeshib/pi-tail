@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadPiRuntime } from "./pi-runtime.mjs";
@@ -151,9 +152,39 @@ test("delta reconstruction follows Pi's content-block contract", () => {
 	]);
 });
 
-test("options parse", () => {
-	expect(parseArgs(["log.jsonl", "--print", "--cwd", "/x"])).toEqual({ target: "log.jsonl", print: true, cwd: "/x" });
+test("options follow tail(1)", () => {
+	expect(parseArgs(["-f", "log.jsonl", "--cwd", "/x"])).toEqual({ target: "log.jsonl", follow: true, lines: undefined, cwd: "/x" });
+	expect(parseArgs(["-n", "20", "log.jsonl"])).toMatchObject({ follow: false, lines: 20 });
+	expect(parseArgs(["-n5"])).toMatchObject({ target: undefined, lines: 5 });
+	expect(parseArgs(["--lines=0", "-"])).toMatchObject({ target: "-", lines: 0 });
 	expect(() => parseArgs(["a", "b"])).toThrow("Unexpected argument: b");
+	expect(() => parseArgs(["-n", "x", "a"])).toThrow("Invalid line count");
+	expect(() => parseArgs(["--print", "a"])).toThrow("Unknown option");
+	expect(() => parseArgs(["-f"])).toThrow("-f needs a file");
+	expect(() => parseArgs(["-f", "-n", "3", "a"])).toThrow("cannot be combined");
+});
+
+test("the CLI prints a file or stdin once, optionally only the last lines", () => {
+	const base = mkdtempSync(path.join(os.tmpdir(), "pi-tail-cli-"));
+	try {
+		const log = path.join(base, "run.jsonl");
+		writeFileSync(log, `${run().map((event) => JSON.stringify(event)).join("\n")}\n`);
+		const env = { ...process.env, PI_TAIL_PI_PACKAGE_DIR: runtime.packageDir, PI_CODING_AGENT_DIR: path.join(base, "agent") };
+		const cli = (args: string[], input?: string) =>
+			spawnSync(process.execPath, [path.join(import.meta.dir, "pi-tail.mjs"), ...args, "--cwd", base], { encoding: "utf8", env, input });
+		const full = cli([log]);
+		expect(full.status, full.stderr).toBe(0);
+		const plain = stripAnsi(full.stdout);
+		expect(plain).toContain("Say hi");
+		expect(plain).toContain("All done.");
+		const fromStdin = cli([], `${readFileSync(log, "utf8")}`);
+		expect(fromStdin.stdout).toBe(full.stdout);
+		const last = cli(["-n", "2", log]);
+		expect(last.stdout).toBe(`${full.stdout.slice(0, -1).split("\n").slice(-2).join("\n")}\n`);
+		expect(cli(["-n0", log]).stdout).toBe("");
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
 });
 
 test("the log reader skips non-JSON lines and handles split chunks", () => {

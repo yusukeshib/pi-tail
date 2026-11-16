@@ -5,13 +5,14 @@ way Pi renders its own chat, with the installed Pi's TUI components
 (`AssistantMessageComponent`, `ToolExecutionComponent`, …).
 
 The input is the JSONL event stream that `pi --mode rpc` or `pi --mode json`
-writes to stdout. Save that stream to a file and point `pi-tail` at it, while
-the agent is still running or afterwards.
+writes to stdout. The interface follows tail(1).
 
 ```sh
-pi --mode rpc > run.jsonl          # or any process that records Pi's stdout
-pi-tail run.jsonl                  # follow live
-pi-tail run.jsonl --print          # render once to stdout
+pi --mode json -p "Summarize README.md" > run.jsonl
+pi-tail run.jsonl                  # render the transcript once to stdout
+pi-tail -n 40 run.jsonl            # only the last 40 rendered lines
+pi-tail -f run.jsonl               # follow live in Pi's TUI
+pi --mode json -p "hi" | pi-tail   # read stdin
 ```
 
 ## Install
@@ -32,13 +33,17 @@ So the transcript is rendered by the same Pi release that you run.
 ## Usage
 
 ```
-pi-tail <file> [--print] [--cwd DIR]
+pi-tail [-f] [-n N] [--cwd DIR] [file]
 ```
 
-- Follow mode re-reads the file every 200 ms and starts over if it shrinks.
-- Keys: `q` / `Ctrl-C` quit, `Ctrl-O` expand or collapse tool output, `t`
-  toggle thinking blocks.
-- `--print` renders the current transcript once to stdout.
+- Without `-f`, the transcript is rendered once to stdout. With no file or
+  `-`, the log is read from stdin until EOF.
+- `-n N` / `--lines N` / `-nN` prints only the last N rendered lines. Unlike
+  tail(1), the default is the whole transcript.
+- `-f` / `--follow` follows the file in Pi's TUI. It re-reads the file every
+  200 ms and starts over if it shrinks. Keys: `q` / `Ctrl-C` quit, `Ctrl-O`
+  expand or collapse tool output, `t` toggle thinking blocks. `-f` needs a
+  file (the TUI reads keys from stdin) and cannot be combined with `-n`.
 - `--cwd DIR` is the agent's working directory (default: the current
   directory). It decides which Pi settings, themes and extensions are loaded,
   and tool paths are shown relative to it.
@@ -52,8 +57,7 @@ skipped, never installed; a project that Pi has not been told to trust is
 loaded without its project-local resources.
 
 Lines that are not JSON objects and event types pi-tail does not render are
-ignored, so a log may carry other records. Reading the stream from stdin is not
-supported yet: the terminal UI reads keys from stdin.
+ignored, so a log may carry other records.
 
 ## Library
 
@@ -63,12 +67,14 @@ import { runViewer } from "@yusukeshib/pi-tail";
 await runViewer({
   file: "/path/to/run.jsonl",
   cwd: "/path/to/project",
+  follow: true,
   status: () => "worker · running", // shown before the key hints
 });
 ```
 
-`runViewer({ print: true })` resolves to `0` after printing. In follow mode it
-resolves once the UI is running, and quitting exits the process.
+Without `follow`, `runViewer` prints (the last `lines` lines, if given; stdin
+when `file` is omitted) and resolves to `0`. With `follow` it resolves once the
+UI is running, and quitting exits the process.
 
 Lower-level pieces are exported too: `createTranscriptView` (apply events,
 read `.container`), `createLogReader`, `loadPiRuntime`, `loadPiEnvironment`,
