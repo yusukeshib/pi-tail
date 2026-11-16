@@ -1,0 +1,59 @@
+{
+  "name": "@yusukeshib/pi-tail",
+  "version": "0.1.0",
+  "description": "Follow a Pi RPC / JSON event log and render it with Pi's own TUI components.",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "rpc",
+    "transcript",
+    "viewer",
+    "tail"
+  ],
+  "license": "MIT",
+  "author": "Yusuke Shibata <yusukeshib@gmail.com>",
+  "homepage": "https://github.com/yusukeshib/pi-tail#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yusukeshib/pi-tail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yusukeshib/pi-tail/issues"
+  },
+  "type": "module",
+  "bin": {
+    "pi-tail": "./pi-tail.mjs"
+  },
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "pi-tail.mjs",
+    "transcript-view.mjs",
+    "pi-runtime.mjs",
+    "pi-environment.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "bun test",
+    "release": "npm publish --access public"
+  }
+}
