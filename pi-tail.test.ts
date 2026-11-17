@@ -165,7 +165,7 @@ test("options follow tail(1)", () => {
 	expect(() => parseArgs(["-n", "x", "a"])).toThrow("Invalid line count");
 	expect(() => parseArgs(["--print", "a"])).toThrow("Unknown option");
 	expect(() => parseArgs(["-f"])).toThrow("-f needs a file");
-	expect(() => parseArgs(["-f", "-n", "3", "a"])).toThrow("cannot be combined");
+	expect(parseArgs(["-f", "-n", "3", "a"])).toMatchObject({ follow: true, lines: 3 });
 });
 
 test("the CLI prints a file or stdin once, optionally only the last lines", () => {

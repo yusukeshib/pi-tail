@@ -12,7 +12,8 @@ pi --mode json -p "Summarize README.md" > run.jsonl
 pi-tail run.jsonl                  # the last 10 rendered lines
 pi-tail -n 40 run.jsonl            # the last 40 rendered lines
 pi-tail -n +1 run.jsonl            # the whole transcript
-pi-tail -f run.jsonl               # follow live in Pi's TUI
+pi-tail -f run.jsonl               # follow live in Pi's TUI from the last 10 lines
+pi-tail -f -n +1 run.jsonl         # follow from the start
 pi --mode json -p "hi" | pi-tail   # read stdin
 ```
 
@@ -43,10 +44,14 @@ pi-tail [-f] [-n N] [--cwd DIR] [file]
   as in tail(1)); `-n +N` prints from rendered line N on. For a file and
   `-n N`, only the end of the log is read: rendering starts at the latest run
   or message near the end and moves back until it fills N lines.
-- `-f` / `--follow` follows the file in Pi's TUI. It re-reads the file every
-  200 ms and starts over if it shrinks. Keys: `q` / `Ctrl-C` quit, `Ctrl-O`
-  expand or collapse tool output, `t` toggle thinking blocks. `-f` needs a
-  file (the TUI reads keys from stdin) and cannot be combined with `-n`.
+- `-f` / `--follow` follows the file in Pi's TUI. Like `tail -f`, it starts
+  at the end: with `-n N` (default 10) the view begins at the messages that
+  hold the last N rendered lines (whole messages, so it may show more than N),
+  `-n 0` starts at the end of the file, and `-n +N` from the start. Earlier
+  messages are not loaded later; use `-n +1` to see everything. It re-reads
+  the file every 200 ms and starts over if it shrinks. Keys: `q` / `Ctrl-C`
+  quit, `Ctrl-O` expand or collapse tool output, `t` toggle thinking blocks.
+  `-f` needs a file (the TUI reads keys from stdin).
 - `--cwd DIR` is the agent's working directory (default: the current
   directory). It decides which Pi settings, themes and extensions are loaded,
   and tool paths are shown relative to it.

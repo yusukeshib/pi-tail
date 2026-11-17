@@ -8,7 +8,8 @@
  * The file is the JSONL event stream `pi --mode rpc` (or `pi --mode json`)
  * writes to stdout. Like tail(1): without -f the transcript is rendered once
  * to stdout (the last 10 lines; -n N / -n +N as in tail); with no file or `-` it is read from
- * stdin. -f follows the file in Pi's TUI until you quit (q / Ctrl-C).
+ * stdin. -f starts there and follows the file in Pi's TUI until you quit
+ * (q / Ctrl-C).
  */
 import fs from "node:fs";
 import module from "node:module";
@@ -49,7 +50,6 @@ export function parseArgs(argv) {
 		else if (options.target === undefined) options.target = arg;
 		else throw new Error(`Unexpected argument: ${arg}`);
 	}
-	if (options.follow && options.lines !== undefined) throw new Error("-n cannot be combined with -f");
 	if (options.follow && (options.target === undefined || options.target === "-")) {
 		throw new Error("-f needs a file: the terminal UI reads keys from stdin");
 	}
@@ -135,13 +135,24 @@ function isBoundary(text) {
 
 /**
  * The last `count` rendered lines of a log file, like tail(1) without reading
- * the whole file: render from the latest event boundary near the end and move
- * the start back (reading more of the file when needed) until the rendering has
- * more lines than requested, so the cut never lands on the first component's
- * leading spacing. `renderText(text)` renders log text to lines.
+ * the whole file. See findLogTail.
  */
-export function tailRenderedLines(file, count, renderText, { chunkSize = 256 * 1024 } = {}) {
+export function tailRenderedLines(file, count, renderText, options) {
 	if (count === 0) return [];
+	return findLogTail(file, count, renderText, options).rendered.slice(-count);
+}
+
+/**
+ * Find the end of a log that renders to more than `count` lines: render from
+ * the latest event boundary near the end and move the start back (reading more
+ * of the file when needed) until the rendering has more lines than requested,
+ * so a cut to `count` lines never lands on the first component's leading
+ * spacing. `renderText(text)` renders log text to lines.
+ *
+ * Returns { text, size, rendered }: the log text from the chosen boundary to
+ * byte `size` (the file size when read), and its rendering.
+ */
+export function findLogTail(file, count, renderText, { chunkSize = 256 * 1024 } = {}) {
 	const fd = fs.openSync(file, "r");
 	try {
 		const size = fs.fstatSync(fd).size;
@@ -172,10 +183,11 @@ export function tailRenderedLines(file, count, renderText, { chunkSize = 256 * 1
 			// Try 1, 2, 4, ... boundaries back from the end.
 			for (let back = Math.max(1, tried * 2); back <= boundaries.length; back *= 2) {
 				tried = back;
-				const rendered = renderText(text.slice(boundaries[boundaries.length - back]));
-				if (rendered.length > count) return rendered.slice(-count);
+				const tail = text.slice(boundaries[boundaries.length - back]);
+				const rendered = renderText(tail);
+				if (rendered.length > count) return { text: tail, size, rendered };
 			}
-			if (start === 0 || newStart === 0) return renderText(text).slice(-count);
+			if (start === 0 || newStart === 0) return { text, size, rendered: renderText(text) };
 		}
 	} finally {
 		fs.closeSync(fd);
@@ -210,6 +222,8 @@ export function createViewerInputListener({ tui, getView, quit, onChange }) {
  * - `lines`: without `follow`, print only the last N rendered lines (a
  *   number; only the end of the file is read), or from line N on ("+N").
  *   Undefined prints everything. The CLI defaults to 10, like tail(1).
+ *   With `follow`, a number starts the view at the messages that hold the last
+ *   N lines (0: at the end of the file) instead of the start of the file.
  * - `status()`: text shown before the key hints in the status line, refreshed
  *   on every poll (default: the file path).
  */
@@ -224,17 +238,17 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 	const newView = (tui) => createTranscriptView({ runtime, tui, cwd, render: environment.render });
 
 	let decoder = new TextDecoder();
+	/** Render log text off-screen at the terminal width. */
+	const renderText = (text) => {
+		const view = newView({ requestRender() {} });
+		const reader = createLogReader((event) => view.apply(event));
+		reader.push(text);
+		reader.end();
+		return view.container.render(process.stdout.columns || 120);
+	};
 	if (!follow) {
 		initPiTheme(runtime, environment);
 		for (const message of environment.diagnostics) process.stderr.write(`${message}\n`);
-		const width = process.stdout.columns || 120;
-		const renderText = (text) => {
-			const view = newView({ requestRender() {} });
-			const reader = createLogReader((event) => view.apply(event));
-			reader.push(text);
-			reader.end();
-			return view.container.render(width);
-		};
 		const rendered =
 			file && typeof lines === "number"
 				? tailRenderedLines(file, lines, renderText)
@@ -280,7 +294,16 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 	ui.addChild(view.container);
 	ui.addChild(statusText);
 
+	// Like tail -f: start at the messages that hold the last N lines.
 	let offset = 0;
+	if (typeof lines === "number") {
+		if (lines === 0) offset = fs.statSync(file).size;
+		else {
+			const tail = findLogTail(file, lines, renderText);
+			reader.push(tail.text);
+			offset = tail.size;
+		}
+	}
 	const poll = () => {
 		const chunk = readFrom(file, offset);
 		if (chunk.truncated) {
@@ -329,7 +352,7 @@ export async function main(argv = process.argv.slice(2)) {
 	}
 	const file = options.target === undefined || options.target === "-" ? undefined : path.resolve(options.target);
 	// Like tail(1): the last 10 lines unless -n says otherwise.
-	const lines = options.follow ? undefined : (options.lines ?? DEFAULT_LINES);
+	const lines = options.lines ?? DEFAULT_LINES;
 	return runViewer({ file, cwd: options.cwd, follow: options.follow, lines });
 }
 
