@@ -11,6 +11,7 @@
  * stdin. -f follows the file in Pi's TUI until you quit (q / Ctrl-C).
  */
 import fs from "node:fs";
+import module from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyTerminalSettings, initPiTheme, loadPiEnvironment } from "./pi-environment.mjs";
@@ -140,7 +141,7 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 	applyTerminalSettings(runtime, environment);
 	const newView = (tui) => createTranscriptView({ runtime, tui, cwd, render: environment.render });
 
-	const decoder = new TextDecoder();
+	let decoder = new TextDecoder();
 	if (!follow) {
 		initPiTheme(runtime, environment);
 		for (const message of environment.diagnostics) process.stderr.write(`${message}\n`);
@@ -178,10 +179,16 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 	let view = newView(ui);
 	let reader = createLogReader((event) => view.apply(event));
 	const statusText = new Text("", 1, 0);
+	let statusValue;
+	/** Refresh the status line; true when its text changed. */
 	const statusLine = () => {
 		const prefix = statusPrefix();
 		const hints = `q quit · ctrl+o ${view.expanded ? "collapse" : "expand"} tools · t thinking`;
-		statusText.setText(`\x1b[2m${prefix ? `${prefix} · ` : ""}${hints}\x1b[0m`);
+		const value = `\x1b[2m${prefix ? `${prefix} · ` : ""}${hints}\x1b[0m`;
+		if (value === statusValue) return false;
+		statusValue = value;
+		statusText.setText(value);
+		return true;
 	};
 	ui.addChild(view.container);
 	ui.addChild(statusText);
@@ -192,14 +199,16 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 		if (chunk.truncated) {
 			// The file was replaced; start over.
 			const index = ui.children.indexOf(view.container);
+			decoder = new TextDecoder();
 			view = newView(ui);
 			reader = createLogReader((event) => view.apply(event));
 			ui.children.splice(index, 1, view.container);
 		}
 		offset = chunk.offset;
 		if (chunk.text.length) reader.push(decoder.decode(chunk.text, { stream: true }));
-		statusLine();
-		ui.requestRender();
+		// Polling an idle file must not re-render the whole transcript.
+		const statusChanged = statusLine();
+		if (chunk.truncated || chunk.text.length || statusChanged) ui.requestRender();
 	};
 
 	const quit = () => {
@@ -250,4 +259,8 @@ export function runCli(run) {
 }
 
 const entry = process.argv[1] ? pathToFileURL(fs.realpathSync(process.argv[1])).href : undefined;
-if (entry === import.meta.url) runCli(main);
+if (entry === import.meta.url) {
+	// Pi's module graph is large; cache its compiled code across runs (Node >= 22.1).
+	module.enableCompileCache?.();
+	runCli(main);
+}

@@ -48,8 +48,13 @@ function packageDirFromBinary() {
 
 /** Directory of the installed pi-coding-agent package, or undefined. */
 export function findPiPackageDir() {
-	const candidates = [process.env.PI_TAIL_PI_PACKAGE_DIR, managedInstallDir(), packageDirFromBinary()];
-	return candidates.find((dir) => dir && packageName(dir) === AGENT_PACKAGE);
+	// Lazy: resolving the `pi` binary spawns a shell, so only do it when needed.
+	const candidates = [() => process.env.PI_TAIL_PI_PACKAGE_DIR, managedInstallDir, packageDirFromBinary];
+	for (const candidate of candidates) {
+		const dir = candidate();
+		if (dir && packageName(dir) === AGENT_PACKAGE) return dir;
+	}
+	return undefined;
 }
 
 function siblingPackageEntry(agentDir, name) {
@@ -106,12 +111,17 @@ export async function loadPiRuntime() {
 	if (packageDir) {
 		const pkg = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8"));
 		version = pkg.version;
-		agent = await import(pathToFileURL(path.join(packageDir, pkg.exports?.["."]?.import ?? "dist/index.js")).href);
 		const tuiEntry = siblingPackageEntry(packageDir, "pi-tui");
-		tui = await import(tuiEntry ?? "@earendil-works/pi-tui");
-		for (const [key, relativePath] of Object.entries(INTERNAL_MODULES)) {
-			internal[key] = await importInternal(packageDir, relativePath);
-		}
+		const entries = Object.entries(INTERNAL_MODULES);
+		let modules;
+		[agent, tui, ...modules] = await Promise.all([
+			import(pathToFileURL(path.join(packageDir, pkg.exports?.["."]?.import ?? "dist/index.js")).href),
+			import(tuiEntry ?? "@earendil-works/pi-tui"),
+			...entries.map(([, relativePath]) => importInternal(packageDir, relativePath)),
+		]);
+		entries.forEach(([key], index) => {
+			internal[key] = modules[index];
+		});
 	} else {
 		agent = await import(AGENT_PACKAGE);
 		tui = await import("@earendil-works/pi-tui");
