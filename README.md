@@ -9,8 +9,9 @@ writes to stdout. The interface follows tail(1).
 
 ```sh
 pi --mode json -p "Summarize README.md" > run.jsonl
-pi-tail run.jsonl                  # render the transcript once to stdout
-pi-tail -n 40 run.jsonl            # only the last 40 rendered lines
+pi-tail run.jsonl                  # the last 10 rendered lines
+pi-tail -n 40 run.jsonl            # the last 40 rendered lines
+pi-tail -n +1 run.jsonl            # the whole transcript
 pi-tail -f run.jsonl               # follow live in Pi's TUI
 pi --mode json -p "hi" | pi-tail   # read stdin
 ```
@@ -38,8 +39,10 @@ pi-tail [-f] [-n N] [--cwd DIR] [file]
 
 - Without `-f`, the transcript is rendered once to stdout. With no file or
   `-`, the log is read from stdin until EOF.
-- `-n N` / `--lines N` / `-nN` prints only the last N rendered lines. Unlike
-  tail(1), the default is the whole transcript.
+- `-n N` / `--lines N` / `-nN` prints the last N rendered lines (default 10,
+  as in tail(1)); `-n +N` prints from rendered line N on. For a file and
+  `-n N`, only the end of the log is read: rendering starts at the latest run
+  or message near the end and moves back until it fills N lines.
 - `-f` / `--follow` follows the file in Pi's TUI. It re-reads the file every
   200 ms and starts over if it shrinks. Keys: `q` / `Ctrl-C` quit, `Ctrl-O`
   expand or collapse tool output, `t` toggle thinking blocks. `-f` needs a
@@ -72,7 +75,8 @@ await runViewer({
 });
 ```
 
-Without `follow`, `runViewer` prints (the last `lines` lines, if given; stdin
+Without `follow`, `runViewer` prints (the last `lines` lines, or from line
+`"+N"` on, if given; everything otherwise; stdin
 when `file` is omitted) and resolves to `0`. With `follow` it resolves once the
 UI is running, and quitting exits the process.
 

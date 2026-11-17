@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadPiRuntime } from "./pi-runtime.mjs";
 import { loadPiEnvironment } from "./pi-environment.mjs";
 import { applyAssistantDelta, createTranscriptView, defaultRenderContext } from "./transcript-view.mjs";
-import { createLogReader, createViewerInputListener, parseArgs } from "./pi-tail.mjs";
+import { createLogReader, createViewerInputListener, parseArgs, selectLines, tailRenderedLines } from "./pi-tail.mjs";
 
 const runtime = await loadPiRuntime();
 runtime.agent.initTheme(undefined, false);
@@ -157,6 +157,10 @@ test("options follow tail(1)", () => {
 	expect(parseArgs(["-n", "20", "log.jsonl"])).toMatchObject({ follow: false, lines: 20 });
 	expect(parseArgs(["-n5"])).toMatchObject({ target: undefined, lines: 5 });
 	expect(parseArgs(["--lines=0", "-"])).toMatchObject({ target: "-", lines: 0 });
+	expect(parseArgs(["-n", "+3", "a"])).toMatchObject({ lines: "+3" });
+	expect(parseArgs(["-n-4", "a"])).toMatchObject({ lines: 4 });
+	expect(selectLines(["a", "b", "c"], "+2")).toEqual(["b", "c"]);
+	expect(selectLines(["a", "b", "c"], 2)).toEqual(["b", "c"]);
 	expect(() => parseArgs(["a", "b"])).toThrow("Unexpected argument: b");
 	expect(() => parseArgs(["-n", "x", "a"])).toThrow("Invalid line count");
 	expect(() => parseArgs(["--print", "a"])).toThrow("Unknown option");
@@ -172,16 +176,50 @@ test("the CLI prints a file or stdin once, optionally only the last lines", () =
 		const env = { ...process.env, PI_TAIL_PI_PACKAGE_DIR: runtime.packageDir, PI_CODING_AGENT_DIR: path.join(base, "agent") };
 		const cli = (args: string[], input?: string) =>
 			spawnSync(process.execPath, [path.join(import.meta.dir, "pi-tail.mjs"), ...args, "--cwd", base], { encoding: "utf8", env, input });
-		const full = cli([log]);
+		const full = cli(["-n", "+1", log]);
 		expect(full.status, full.stderr).toBe(0);
 		const plain = stripAnsi(full.stdout);
 		expect(plain).toContain("Say hi");
 		expect(plain).toContain("All done.");
-		const fromStdin = cli([], `${readFileSync(log, "utf8")}`);
-		expect(fromStdin.stdout).toBe(full.stdout);
-		const last = cli(["-n", "2", log]);
-		expect(last.stdout).toBe(`${full.stdout.slice(0, -1).split("\n").slice(-2).join("\n")}\n`);
+		const fullLines = full.stdout.slice(0, -1).split("\n");
+		const lastLines = (count: number) => `${fullLines.slice(-count).join("\n")}\n`;
+		// Like tail(1): the last 10 lines by default, from a file or stdin.
+		expect(cli([log]).stdout).toBe(lastLines(10));
+		expect(cli([], `${readFileSync(log, "utf8")}`).stdout).toBe(lastLines(10));
+		expect(cli(["-n", "2", log]).stdout).toBe(lastLines(2));
 		expect(cli(["-n0", log]).stdout).toBe("");
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+});
+
+test("tail rendering reads only the end of the file and matches a full render", () => {
+	const base = mkdtempSync(path.join(os.tmpdir(), "pi-tail-tail-"));
+	try {
+		const log = path.join(base, "run.jsonl");
+		const events = Array.from({ length: 40 }, () => run()).flat();
+		const text = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+		writeFileSync(log, text);
+		const rendered: string[] = [];
+		const renderText = (input: string) => {
+			rendered.push(input);
+			const view = createTranscriptView({ runtime, tui: { requestRender() {} }, cwd: "/repo" });
+			const reader = createLogReader((event: Record<string, unknown>) => view.apply(event));
+			reader.push(input);
+			reader.end();
+			return view.container.render(100);
+		};
+		const full = renderText(text);
+		rendered.length = 0;
+		for (const count of [1, 5, 12, 40]) {
+			expect(tailRenderedLines(log, count, renderText, { chunkSize: 512 })).toEqual(full.slice(-count));
+		}
+		// Small requests never render (or read) the whole log.
+		rendered.length = 0;
+		tailRenderedLines(log, 5, renderText, { chunkSize: 512 });
+		expect(Math.max(...rendered.map((input) => input.length))).toBeLessThan(text.length / 4);
+		// More lines than the log has: the whole transcript.
+		expect(tailRenderedLines(log, 100000, renderText, { chunkSize: 512 })).toEqual(full);
 	} finally {
 		rmSync(base, { recursive: true, force: true });
 	}
