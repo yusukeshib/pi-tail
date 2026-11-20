@@ -7,6 +7,41 @@
  */
 
 const RED = "\x1b[31m";
+// CSI, OSC (BEL or ST terminated) and APC sequences: zero-width on screen.
+const ESCAPES = /\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/** True when a rendered line shows nothing but whitespace. */
+export function isBlankLine(line) {
+	return line.replace(ESCAPES, "").trim() === "";
+}
+
+/**
+ * Group a container's children into transcript items, the blocks the chat
+ * shows (a user message, an assistant reply, a tool call, a notice, ...): each
+ * child that renders something visible is an item, and children that render
+ * only blank lines (spacing) belong to the item after them. Returns
+ * [{ children, lines }], oldest first; trailing spacing joins the last item.
+ */
+export function transcriptItems(container, width) {
+	const items = [];
+	let children = [];
+	let lines = [];
+	for (const child of container.children) {
+		const rendered = child.render(width);
+		children.push(child);
+		lines.push(...rendered);
+		if (rendered.some((line) => !isBlankLine(line))) {
+			items.push({ children, lines });
+			children = [];
+			lines = [];
+		}
+	}
+	if (children.length > 0 && items.length > 0) {
+		items.at(-1).children.push(...children);
+		items.at(-1).lines.push(...lines);
+	}
+	return items;
+}
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
@@ -308,6 +343,23 @@ export function createTranscriptView({ runtime, tui, cwd = process.cwd(), render
 	return {
 		container,
 		apply,
+		/** The transcript items at `width` (see transcriptItems). */
+		items(width) {
+			return transcriptItems(container, width);
+		},
+		/** Remove the first `count` items (as laid out at `width`) from the view. */
+		dropItems(count, width) {
+			if (count <= 0) return;
+			const items = transcriptItems(container, width);
+			const keep = items[count]?.children[0];
+			const cut = keep ? container.children.indexOf(keep) : container.children.length;
+			const dropped = new Set(container.children.slice(0, cut));
+			container.children.splice(0, cut);
+			// Dropped components are not toggled any more; live tools still receive updates.
+			for (const list of [expandables, assistants]) {
+				for (let index = list.length - 1; index >= 0; index--) if (dropped.has(list[index])) list.splice(index, 1);
+			}
+		},
 		get expanded() {
 			return expanded;
 		},

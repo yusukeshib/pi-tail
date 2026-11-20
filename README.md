@@ -9,10 +9,10 @@ writes to stdout. The interface follows tail(1).
 
 ```sh
 pi --mode json -p "Summarize README.md" > run.jsonl
-pi-tail run.jsonl                  # the last 10 rendered lines
-pi-tail -n 40 run.jsonl            # the last 40 rendered lines
+pi-tail run.jsonl                  # the last 10 items (messages, tool calls)
+pi-tail -n 3 run.jsonl             # the last 3 items
 pi-tail -n +1 run.jsonl            # the whole transcript
-pi-tail -f run.jsonl               # follow live in Pi's TUI from the last 10 lines
+pi-tail -f run.jsonl               # follow live in Pi's TUI from the last 10 items
 pi-tail -f -n +1 run.jsonl         # follow from the start
 pi --mode json -p "hi" | pi-tail   # read stdin
 ```
@@ -40,15 +40,16 @@ pi-tail [-f] [-n N] [--cwd DIR] [file]
 
 - Without `-f`, the transcript is rendered once to stdout. With no file or
   `-`, the log is read from stdin until EOF.
-- `-n N` / `--lines N` / `-nN` prints the last N rendered lines (default 10,
-  as in tail(1)); `-n +N` prints from rendered line N on. For a file and
+- `-n N` / `--items N` / `-nN` shows the last N transcript items (default
+  10, like tail(1)'s 10 lines); `-n +N` shows from item N on. An item is one
+  block of the chat as Pi shows it: a user message, an assistant reply (its
+  thinking and text), a tool call with its result, a notice. For a file and
   `-n N`, only the end of the log is read: rendering starts at the latest run
-  or message near the end and moves back until it fills N lines.
+  or message near the end and moves back until it has N items.
 - `-f` / `--follow` follows the file in Pi's TUI. Like `tail -f`, it starts
-  at the end: with `-n N` (default 10) the view begins at the messages that
-  hold the last N rendered lines (whole messages, so it may show more than N),
-  `-n 0` starts at the end of the file, and `-n +N` from the start. Earlier
-  messages are not loaded later; use `-n +1` to see everything. It re-reads
+  at the end: with `-n N` (default 10) the view begins with the last N items,
+  `-n 0` starts at the end of the file, and `-n +N` at item N. Earlier
+  items are not loaded later; use `-n +1` to see everything. It re-reads
   the file every 200 ms and starts over if it shrinks. Keys: `q` / `Ctrl-C`
   quit, `Ctrl-O` expand or collapse tool output, `t` toggle thinking blocks.
   `-f` needs a file (the TUI reads keys from stdin).
@@ -80,13 +81,13 @@ await runViewer({
 });
 ```
 
-Without `follow`, `runViewer` prints (the last `lines` lines, or from line
-`"+N"` on, if given; everything otherwise; stdin
-when `file` is omitted) and resolves to `0`. With `follow` it resolves once the
-UI is running, and quitting exits the process.
+`items` limits the transcript to the last N items, or from item `"+N"` on
+(everything when omitted). Without `follow`, `runViewer` prints it (stdin when
+`file` is omitted) and resolves to `0`. With `follow` it resolves once the UI
+is running, and quitting exits the process.
 
 Lower-level pieces are exported too: `createTranscriptView` (apply events,
-read `.container`), `createLogReader`, `loadPiRuntime`, `loadPiEnvironment`,
+read `.container` or `.items(width)`), `createLogReader`, `loadPiRuntime`, `loadPiEnvironment`,
 `initPiTheme`, `applyTerminalSettings`, `createViewerInputListener`.
 
 The event-to-component mapping mirrors Pi's interactive mode but is a separate

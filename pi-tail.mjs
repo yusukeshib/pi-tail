@@ -7,8 +7,8 @@
  *
  * The file is the JSONL event stream `pi --mode rpc` (or `pi --mode json`)
  * writes to stdout. Like tail(1): without -f the transcript is rendered once
- * to stdout (the last 10 lines; -n N / -n +N as in tail); with no file or `-` it is read from
- * stdin. -f starts there and follows the file in Pi's TUI until you quit
+ * to stdout (the last 10 transcript items — messages and tool calls; -n N /
+ * -n +N as in tail); with no file or `-` it is read from stdin. -f starts there and follows the file in Pi's TUI until you quit
  * (q / Ctrl-C).
  */
 import fs from "node:fs";
@@ -17,33 +17,43 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyTerminalSettings, initPiTheme, loadPiEnvironment } from "./pi-environment.mjs";
 import { loadPiRuntime } from "./pi-runtime.mjs";
-import { createTranscriptView } from "./transcript-view.mjs";
+import { createTranscriptView, isBlankLine } from "./transcript-view.mjs";
 
 export const USAGE = "Usage: pi-tail [-f] [-n N] [--cwd DIR] [file]";
 
-/** tail(1) line count: `N` (last N lines) or `+N` (from line N on). */
-function lineCount(value) {
-	if (!/^[+-]?\d+$/.test(value ?? "")) throw new Error(`Invalid line count: ${value}`);
+/** tail(1)-style item count: `N` (last N items) or `+N` (from item N on). */
+function itemCount(value) {
+	if (!/^[+-]?\d+$/.test(value ?? "")) throw new Error(`Invalid item count: ${value}`);
 	return value.startsWith("+") ? value : Math.abs(Number(value));
 }
 
-/** Apply a tail(1) line count (see lineCount) to rendered lines. */
-export function selectLines(rendered, lines) {
-	if (lines === undefined) return rendered;
-	if (typeof lines === "string") return rendered.slice(Math.max(Number(lines.slice(1)) - 1, 0));
-	return lines === 0 ? [] : rendered.slice(-lines);
+/** Index of the first item to show for an item count (see itemCount). */
+function firstItem(total, items) {
+	if (items === undefined) return 0;
+	if (typeof items === "string") return Math.min(Math.max(Number(items.slice(1)) - 1, 0), total);
+	return Math.max(total - items, 0);
 }
 
-export const DEFAULT_LINES = 10;
+/**
+ * Apply an item count to transcript items ([{ lines }], see transcriptItems)
+ * and return the lines to print, without leading blank lines.
+ */
+export function selectItems(items, count) {
+	const lines = items.slice(firstItem(items.length, count)).flatMap((item) => item.lines);
+	const start = lines.findIndex((line) => !isBlankLine(line));
+	return start < 0 ? [] : lines.slice(start);
+}
+
+export const DEFAULT_ITEMS = 10;
 
 export function parseArgs(argv) {
-	const options = { follow: false, lines: undefined, cwd: undefined, target: undefined };
+	const options = { follow: false, items: undefined, cwd: undefined, target: undefined };
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index];
 		if (arg === "-f" || arg === "--follow") options.follow = true;
-		else if (arg === "-n" || arg === "--lines") options.lines = lineCount(argv[++index]);
-		else if (/^-n[+-]?\d+$/.test(arg)) options.lines = lineCount(arg.slice(2));
-		else if (arg.startsWith("--lines=")) options.lines = lineCount(arg.slice("--lines=".length));
+		else if (arg === "-n" || arg === "--items") options.items = itemCount(argv[++index]);
+		else if (/^-n[+-]?\d+$/.test(arg)) options.items = itemCount(arg.slice(2));
+		else if (arg.startsWith("--items=")) options.items = itemCount(arg.slice("--items=".length));
 		else if (arg === "--cwd") options.cwd = argv[++index];
 		else if (arg === "-h" || arg === "--help") options.help = true;
 		else if (arg !== "-" && arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
@@ -134,25 +144,24 @@ function isBoundary(text) {
 }
 
 /**
- * The last `count` rendered lines of a log file, like tail(1) without reading
- * the whole file. See findLogTail.
+ * The lines of the last `count` transcript items of a log file, without
+ * reading the whole file. See findLogTail.
  */
-export function tailRenderedLines(file, count, renderText, options) {
+export function tailItems(file, count, renderItems, options) {
 	if (count === 0) return [];
-	return findLogTail(file, count, renderText, options).rendered.slice(-count);
+	return selectItems(findLogTail(file, count, renderItems, options).items, count);
 }
 
 /**
- * Find the end of a log that renders to more than `count` lines: render from
- * the latest event boundary near the end and move the start back (reading more
- * of the file when needed) until the rendering has more lines than requested,
- * so a cut to `count` lines never lands on the first component's leading
- * spacing. `renderText(text)` renders log text to lines.
+ * Find the end of a log that holds at least `count` transcript items: render
+ * from the latest event boundary near the end and move the start back
+ * (reading more of the file when needed) until there are enough items.
+ * `renderItems(text)` renders log text to transcript items.
  *
- * Returns { text, size, rendered }: the log text from the chosen boundary to
- * byte `size` (the file size when read), and its rendering.
+ * Returns { text, size, items }: the log text from the chosen boundary to
+ * byte `size` (the file size when read), and its items.
  */
-export function findLogTail(file, count, renderText, { chunkSize = 256 * 1024 } = {}) {
+export function findLogTail(file, count, renderItems, { chunkSize = 256 * 1024 } = {}) {
 	const fd = fs.openSync(file, "r");
 	try {
 		const size = fs.fstatSync(fd).size;
@@ -184,10 +193,10 @@ export function findLogTail(file, count, renderText, { chunkSize = 256 * 1024 } 
 			for (let back = Math.max(1, tried * 2); back <= boundaries.length; back *= 2) {
 				tried = back;
 				const tail = text.slice(boundaries[boundaries.length - back]);
-				const rendered = renderText(tail);
-				if (rendered.length > count) return { text: tail, size, rendered };
+				const items = renderItems(tail);
+				if (items.length >= count) return { text: tail, size, items };
 			}
-			if (start === 0 || newStart === 0) return { text, size, rendered: renderText(text) };
+			if (start === 0 || newStart === 0) return { text, size, items: renderItems(text) };
 		}
 	} finally {
 		fs.closeSync(fd);
@@ -219,15 +228,15 @@ export function createViewerInputListener({ tui, getView, quit, onChange }) {
  *   that tool paths are shown relative to (default: process.cwd()).
  * - `follow`: follow the file in Pi's TUI until q / Ctrl-C, which exits the
  *   process. Otherwise render once to stdout and resolve to 0.
- * - `lines`: without `follow`, print only the last N rendered lines (a
- *   number; only the end of the file is read), or from line N on ("+N").
- *   Undefined prints everything. The CLI defaults to 10, like tail(1).
- *   With `follow`, a number starts the view at the messages that hold the last
- *   N lines (0: at the end of the file) instead of the start of the file.
+ * - `items`: show only the last N transcript items — user messages,
+ *   assistant replies, tool calls, notices — (a number; for a file only its
+ *   end is read), or from item N on ("+N"). Undefined shows everything. The
+ *   CLI defaults to 10, like tail(1). With `follow`, this is where the view
+ *   starts (0: at the end of the file); new items are appended as they come.
  * - `status()`: text shown before the key hints in the status line, refreshed
  *   on every poll (default: the file path).
  */
-export async function runViewer({ file, cwd = process.cwd(), follow = false, lines, status } = {}) {
+export async function runViewer({ file, cwd = process.cwd(), follow = false, items, status } = {}) {
 	if (follow && !file) throw new Error("runViewer: follow needs a file");
 	if (file && !fs.existsSync(file)) throw new Error(`No such file: ${file}`);
 	const statusPrefix = status ?? (() => file);
@@ -238,21 +247,22 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 	const newView = (tui) => createTranscriptView({ runtime, tui, cwd, render: environment.render });
 
 	let decoder = new TextDecoder();
-	/** Render log text off-screen at the terminal width. */
-	const renderText = (text) => {
+	const width = () => process.stdout.columns || 120;
+	/** Render log text off-screen at the terminal width into transcript items. */
+	const renderItems = (text) => {
 		const view = newView({ requestRender() {} });
 		const reader = createLogReader((event) => view.apply(event));
 		reader.push(text);
 		reader.end();
-		return view.container.render(process.stdout.columns || 120);
+		return view.items(width());
 	};
 	if (!follow) {
 		initPiTheme(runtime, environment);
 		for (const message of environment.diagnostics) process.stderr.write(`${message}\n`);
 		const rendered =
-			file && typeof lines === "number"
-				? tailRenderedLines(file, lines, renderText)
-				: selectLines(renderText(decoder.decode(file ? fs.readFileSync(file) : await readStdin())), lines);
+			file && typeof items === "number"
+				? tailItems(file, items, renderItems)
+				: selectItems(renderItems(decoder.decode(file ? fs.readFileSync(file) : await readStdin())), items);
 		if (rendered.length === 0) return 0;
 		await new Promise((resolve) => process.stdout.write(`${rendered.join("\n")}\n`, resolve));
 		return 0;
@@ -294,15 +304,21 @@ export async function runViewer({ file, cwd = process.cwd(), follow = false, lin
 	ui.addChild(view.container);
 	ui.addChild(statusText);
 
-	// Like tail -f: start at the messages that hold the last N lines.
+	// Like tail -f: start at the last N items (or at item N for +N).
 	let offset = 0;
-	if (typeof lines === "number") {
-		if (lines === 0) offset = fs.statSync(file).size;
+	if (typeof items === "number") {
+		if (items === 0) offset = fs.statSync(file).size;
 		else {
-			const tail = findLogTail(file, lines, renderText);
+			const tail = findLogTail(file, items, renderItems);
 			reader.push(tail.text);
 			offset = tail.size;
+			view.dropItems(tail.items.length - items, width());
 		}
+	} else if (typeof items === "string") {
+		const chunk = readFrom(file, 0);
+		if (chunk.text.length) reader.push(decoder.decode(chunk.text, { stream: true }));
+		offset = chunk.offset;
+		view.dropItems(Number(items.slice(1)) - 1, width());
 	}
 	const poll = () => {
 		const chunk = readFrom(file, offset);
@@ -351,9 +367,9 @@ export async function main(argv = process.argv.slice(2)) {
 		return options.help ? 0 : 2;
 	}
 	const file = options.target === undefined || options.target === "-" ? undefined : path.resolve(options.target);
-	// Like tail(1): the last 10 lines unless -n says otherwise.
-	const lines = options.lines ?? DEFAULT_LINES;
-	return runViewer({ file, cwd: options.cwd, follow: options.follow, lines });
+	// Like tail(1): the last 10 items unless -n says otherwise.
+	const items = options.items ?? DEFAULT_ITEMS;
+	return runViewer({ file, cwd: options.cwd, follow: options.follow, items });
 }
 
 /** Run `run()` as a CLI entry point: exit with its code, or keep following. */

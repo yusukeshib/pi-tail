@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadPiRuntime } from "./pi-runtime.mjs";
 import { loadPiEnvironment } from "./pi-environment.mjs";
 import { applyAssistantDelta, createTranscriptView, defaultRenderContext } from "./transcript-view.mjs";
-import { createLogReader, createViewerInputListener, parseArgs, selectLines, tailRenderedLines } from "./pi-tail.mjs";
+import { createLogReader, createViewerInputListener, parseArgs, selectItems, tailItems } from "./pi-tail.mjs";
 
 const runtime = await loadPiRuntime();
 runtime.agent.initTheme(undefined, false);
@@ -153,19 +153,41 @@ test("delta reconstruction follows Pi's content-block contract", () => {
 });
 
 test("options follow tail(1)", () => {
-	expect(parseArgs(["-f", "log.jsonl", "--cwd", "/x"])).toEqual({ target: "log.jsonl", follow: true, lines: undefined, cwd: "/x" });
-	expect(parseArgs(["-n", "20", "log.jsonl"])).toMatchObject({ follow: false, lines: 20 });
-	expect(parseArgs(["-n5"])).toMatchObject({ target: undefined, lines: 5 });
-	expect(parseArgs(["--lines=0", "-"])).toMatchObject({ target: "-", lines: 0 });
-	expect(parseArgs(["-n", "+3", "a"])).toMatchObject({ lines: "+3" });
-	expect(parseArgs(["-n-4", "a"])).toMatchObject({ lines: 4 });
-	expect(selectLines(["a", "b", "c"], "+2")).toEqual(["b", "c"]);
-	expect(selectLines(["a", "b", "c"], 2)).toEqual(["b", "c"]);
+	expect(parseArgs(["-f", "log.jsonl", "--cwd", "/x"])).toEqual({ target: "log.jsonl", follow: true, items: undefined, cwd: "/x" });
+	expect(parseArgs(["-n", "20", "log.jsonl"])).toMatchObject({ follow: false, items: 20 });
+	expect(parseArgs(["-n5"])).toMatchObject({ target: undefined, items: 5 });
+	expect(parseArgs(["--items=0", "-"])).toMatchObject({ target: "-", items: 0 });
+	expect(parseArgs(["--items", "7", "a"])).toMatchObject({ items: 7 });
+	expect(parseArgs(["-n", "+3", "a"])).toMatchObject({ items: "+3" });
+	expect(parseArgs(["-n-4", "a"])).toMatchObject({ items: 4 });
+	const items = [{ lines: ["a"] }, { lines: ["", "b"] }, { lines: ["", "c", ""] }];
+	expect(selectItems(items, "+2")).toEqual(["b", "", "c", ""]);
+	expect(selectItems(items, 2)).toEqual(["b", "", "c", ""]);
+	expect(selectItems(items, 5)).toEqual(["a", "", "b", "", "c", ""]);
+	expect(selectItems(items, 0)).toEqual([]);
+	expect(selectItems(items, "+9")).toEqual([]);
 	expect(() => parseArgs(["a", "b"])).toThrow("Unexpected argument: b");
-	expect(() => parseArgs(["-n", "x", "a"])).toThrow("Invalid line count");
+	expect(() => parseArgs(["-n", "x", "a"])).toThrow("Invalid item count");
 	expect(() => parseArgs(["--print", "a"])).toThrow("Unknown option");
 	expect(() => parseArgs(["-f"])).toThrow("-f needs a file");
-	expect(parseArgs(["-f", "-n", "3", "a"])).toMatchObject({ follow: true, lines: 3 });
+	expect(parseArgs(["-f", "-n", "3", "a"])).toMatchObject({ follow: true, items: 3 });
+});
+
+test("transcript items are the chat's blocks, with spacing attached to the next block", () => {
+	const { view } = render(run());
+	const items = view.items(100).map((item: any) => stripAnsi(item.lines.join("\n")));
+	// User message, the bash call with its output, the final reply.
+	expect(items).toHaveLength(3);
+	expect(items[0]).toContain("Say hi");
+	expect(items[1]).toContain("echo hi");
+	expect(items[1]).toContain("hi-output");
+	expect(items[2]).toContain("All done.");
+	expect(items.join("\n")).toBe(stripAnsi(view.container.render(100).join("\n")));
+	view.dropItems(2, 100);
+	const rest = stripAnsi(view.container.render(100).join("\n"));
+	expect(rest).toContain("All done.");
+	expect(rest).not.toContain("echo hi");
+	expect(view.items(100)).toHaveLength(1);
 });
 
 test("the CLI prints a file or stdin once, optionally only the last lines", () => {
@@ -181,17 +203,19 @@ test("the CLI prints a file or stdin once, optionally only the last lines", () =
 		const plain = stripAnsi(full.stdout);
 		expect(plain).toContain("Say hi");
 		expect(plain).toContain("All done.");
-		const fullLines = full.stdout.slice(0, -1).split("\n");
-		const lastLines = (count: number) => `${fullLines.slice(-count).join("\n")}\n`;
-		// Like tail(1): the last 10 lines by default, from a file or stdin.
-		expect(cli([log]).stdout).toBe(lastLines(10));
-		expect(cli([], `${readFileSync(log, "utf8")}`).stdout).toBe(lastLines(10));
-		expect(cli(["-n", "2", log]).stdout).toBe(lastLines(2));
+		// Like tail(1): the last 10 items by default (here: all 3), from a file or stdin.
+		expect(cli([log]).stdout).toBe(full.stdout);
+		expect(cli([], `${readFileSync(log, "utf8")}`).stdout).toBe(full.stdout);
+		const last = stripAnsi(cli(["-n", "1", log]).stdout);
+		expect(last).toContain("All done.");
+		expect(last).not.toContain("hi-output");
+		expect(last.startsWith("\n")).toBe(false);
 		expect(cli(["-n0", log]).stdout).toBe("");
 	} finally {
 		rmSync(base, { recursive: true, force: true });
 	}
-});
+	// Each CLI run loads Pi.
+}, 60_000);
 
 test("tail rendering reads only the end of the file and matches a full render", () => {
 	const base = mkdtempSync(path.join(os.tmpdir(), "pi-tail-tail-"));
@@ -201,25 +225,26 @@ test("tail rendering reads only the end of the file and matches a full render", 
 		const text = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
 		writeFileSync(log, text);
 		const rendered: string[] = [];
-		const renderText = (input: string) => {
+		const renderItems = (input: string) => {
 			rendered.push(input);
 			const view = createTranscriptView({ runtime, tui: { requestRender() {} }, cwd: "/repo" });
 			const reader = createLogReader((event: Record<string, unknown>) => view.apply(event));
 			reader.push(input);
 			reader.end();
-			return view.container.render(100);
+			return view.items(100);
 		};
-		const full = renderText(text);
+		const full = renderItems(text);
+		expect(full).toHaveLength(120);
 		rendered.length = 0;
 		for (const count of [1, 5, 12, 40]) {
-			expect(tailRenderedLines(log, count, renderText, { chunkSize: 512 })).toEqual(full.slice(-count));
+			expect(tailItems(log, count, renderItems, { chunkSize: 512 })).toEqual(selectItems(full, count));
 		}
 		// Small requests never render (or read) the whole log.
 		rendered.length = 0;
-		tailRenderedLines(log, 5, renderText, { chunkSize: 512 });
+		tailItems(log, 5, renderItems, { chunkSize: 512 });
 		expect(Math.max(...rendered.map((input) => input.length))).toBeLessThan(text.length / 4);
-		// More lines than the log has: the whole transcript.
-		expect(tailRenderedLines(log, 100000, renderText, { chunkSize: 512 })).toEqual(full);
+		// More items than the log has: the whole transcript.
+		expect(tailItems(log, 100000, renderItems, { chunkSize: 512 })).toEqual(selectItems(full, undefined));
 	} finally {
 		rmSync(base, { recursive: true, force: true });
 	}
