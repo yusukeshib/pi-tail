@@ -1,6 +1,6 @@
 {
   "name": "@yusukeshib/pi-tail",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Follow a Pi RPC / JSON event log and render it with Pi's own TUI components.",
   "keywords": [
     "pi",
